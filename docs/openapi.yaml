@@ -1,0 +1,598 @@
+openapi: 3.0.3
+
+info:
+  title: Auth API
+  description: |
+    Standalone authentication service built with Laravel 12 and Laravel Sanctum.
+
+    Provides user registration, login, token-authenticated profile access, logout,
+    password recovery, and email verification over versioned REST endpoints.
+
+    **Authentication.** Endpoints marked with the `bearerAuth` security scheme require
+    a personal access token issued by `POST /api/v1/auth/login` or
+    `POST /api/v1/auth/register`, sent as `Authorization: Bearer <token>`.
+
+    **Response envelope.** Every response uses the same JSON structure:
+    `success` (boolean), `message` (string), `data` (object, success only), and
+    `errors` (object, failure only; validation errors map field names to arrays of messages).
+
+    **Password policy.** Passwords must be at least 8 characters and contain at
+    least one letter and one number.
+  version: 0.1.0
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:8000
+    description: Local development server
+
+tags:
+  - name: Authentication
+    description: Registration, login, session profile, and logout.
+  - name: Password recovery
+    description: Request and complete password resets.
+  - name: Email verification
+    description: Verify email addresses via signed URLs.
+
+paths:
+  /api/v1/auth/register:
+    post:
+      tags: [Authentication]
+      operationId: register
+      summary: Register a new user
+      description: |
+        Creates a user account and immediately issues a Sanctum personal access
+        token. Emails must be unique. Passwords must satisfy the password policy.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+            example:
+              name: Jane Developer
+              email: jane@example.com
+              password: Password123
+              password_confirmation: Password123
+      responses:
+        '201':
+          description: Account created; token issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenSuccessResponse'
+              example:
+                success: true
+                message: Registration successful.
+                data:
+                  user:
+                    id: 1
+                    name: Jane Developer
+                    email: jane@example.com
+                    email_verified_at: null
+                    created_at: '2026-10-19T12:00:00+00:00'
+                  access_token: '1|xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+                  token_type: Bearer
+                  expires_at: '2026-11-18T12:00:00+00:00'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api/v1/auth/login:
+    post:
+      tags: [Authentication]
+      operationId: login
+      summary: Authenticate and receive an access token
+      description: |
+        Verifies credentials and issues a Sanctum personal access token.
+
+        Invalid credentials (wrong password or unknown email) always return the
+        same generic `401` response so account existence is never disclosed.
+        Failed attempts are rate limited per email + IP (6 per minute); all
+        attempts are also rate limited per IP (10 per minute).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              email: jane@example.com
+              password: Password123
+      responses:
+        '200':
+          description: Authenticated; token issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenSuccessResponse'
+              example:
+                success: true
+                message: Login successful.
+                data:
+                  user:
+                    id: 1
+                    name: Jane Developer
+                    email: jane@example.com
+                    email_verified_at: null
+                    created_at: '2026-10-19T12:00:00+00:00'
+                  access_token: '1|xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+                  token_type: Bearer
+                  expires_at: '2026-11-18T12:00:00+00:00'
+        '401':
+          $ref: '#/components/responses/InvalidCredentials'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api/v1/auth/me:
+    get:
+      tags: [Authentication]
+      operationId: me
+      summary: Get the authenticated user
+      description: Returns the public profile of the user owning the presented access token.
+      parameters:
+        - $ref: '#/components/parameters/BearerAuth'
+      responses:
+        '200':
+          description: Authenticated user's public profile.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserSuccessResponse'
+              example:
+                success: true
+                message: Authenticated user retrieved successfully.
+                data:
+                  user:
+                    id: 1
+                    name: Jane Developer
+                    email: jane@example.com
+                    email_verified_at: null
+                    created_at: '2026-10-19T12:00:00+00:00'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+
+  /api/v1/auth/logout:
+    post:
+      tags: [Authentication]
+      operationId: logout
+      summary: Revoke the current access token
+      description: |
+        Deletes the personal access token used for this request. The token can
+        no longer access any protected endpoint. Other tokens belonging to the
+        same user are not affected.
+      parameters:
+        - $ref: '#/components/parameters/BearerAuth'
+      responses:
+        '200':
+          description: Token revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+              example:
+                success: true
+                message: Successfully logged out.
+                data: {}
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+
+  /api/v1/auth/forgot-password:
+    post:
+      tags: [Password recovery]
+      operationId: forgotPassword
+      summary: Request a password-reset email
+      description: |
+        Sends a password-reset email (containing an expiring, single-use token)
+        if an account exists for the given address. The response is identical
+        whether or not the account exists, so this endpoint never reveals
+        account existence. Rate limited to 6 requests per minute.
+
+        The email links to `PASSWORD_RESET_URL` (an `.env` setting) with
+        `token` and `email` query parameters.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ForgotPasswordRequest'
+            example:
+              email: jane@example.com
+      responses:
+        '202':
+          description: Request accepted; reset email sent if the account exists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+              example:
+                success: true
+                message: If an account exists for the supplied email address, a password reset link has been sent.
+                data: {}
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api/v1/auth/reset-password:
+    post:
+      tags: [Password recovery]
+      operationId: resetPassword
+      summary: Reset a password with a broker token
+      description: |
+        Resets the password for the account matching `email` when `token` is a
+        valid, unexpired, single-use password-reset token (as delivered by the
+        forgot-password email).
+
+        On success, **all** personal access tokens belonging to the user are
+        revoked; the user must log in again. The new password must satisfy the
+        password policy. Rate limited to 6 requests per minute.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetPasswordRequest'
+            example:
+              token: 35e6c3ba42c5c9b41e0dc60e77d1a4a3d4d6b3e1f0e741c4a15b7e5d93f7c1a2
+              email: jane@example.com
+              password: BrandNew123
+              password_confirmation: BrandNew123
+      responses:
+        '200':
+          description: Password reset; all existing tokens revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+              example:
+                success: true
+                message: Password has been reset successfully. Please log in with your new password.
+                data: {}
+        '422':
+          description: |
+            Validation failure — missing/weak fields, or an invalid, expired,
+            or unknown reset token (`errors.token`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                message: The password reset token is invalid or has expired.
+                errors:
+                  token:
+                    - The password reset token is invalid or has expired.
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api/v1/auth/verify-email/{id}/{hash}:
+    get:
+      tags: [Email verification]
+      operationId: verifyEmail
+      summary: Verify an email address via signed URL
+      description: |
+        Marks the user's email address as verified. The URL is generated by
+        Laravel's verification notification and is protected by HMAC signature
+        (`expires` + `signature` query parameters) — unsigned, tampered, or
+        expired links are rejected with `403`. The link is single-purpose and
+        throttled (6 requests per minute).
+
+        Verification is not required to call other endpoints by default;
+        applications can opt in by attaching the `verified` middleware to
+        protected routes.
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: User ID.
+          example: 1
+        - name: hash
+          in: path
+          required: true
+          schema:
+            type: string
+          description: SHA-1 hash of the user's email address (generated by Laravel).
+          example: 912ec803b2ce49e4a541068d495ab570
+        - name: expires
+          in: query
+          required: true
+          schema:
+            type: integer
+          description: Unix timestamp after which the signed URL expires.
+          example: 1795245600
+        - name: signature
+          in: query
+          required: true
+          schema:
+            type: string
+          description: HMAC signature of the URL.
+      responses:
+        '200':
+          description: Email verified (or already verified).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+              example:
+                success: true
+                message: Email address verified successfully.
+                data: {}
+        '403':
+          description: Signature invalid/expired, hash mismatch, or unknown user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                message: The email verification link is invalid.
+                errors: {}
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api/v1/auth/resend-verification:
+    post:
+      tags: [Email verification]
+      operationId: resendVerification
+      summary: Resend the verification email
+      description: |
+        Sends a new verification email to the authenticated user. Returns `409`
+        if the address is already verified. Rate limited to 6 requests per minute.
+      parameters:
+        - $ref: '#/components/parameters/BearerAuth'
+      responses:
+        '202':
+          description: Verification email sent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+              example:
+                success: true
+                message: A new verification link has been sent.
+                data: {}
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '409':
+          description: Email address already verified.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                message: Email address already verified.
+                errors: {}
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: Sanctum personal access token
+      description: |
+        A personal access token issued by `/api/v1/auth/register` or
+        `/api/v1/auth/login`. Send it as `Authorization: Bearer <token>`.
+        Tokens expire after `SANCTUM_EXPIRATION` minutes (default 30 days)
+        and are revoked by logout or password reset.
+
+  parameters:
+    BearerAuth:
+      name: Authorization
+      in: header
+      required: true
+      schema:
+        type: string
+      example: Bearer 1|xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+  schemas:
+    RegisterRequest:
+      type: object
+      required: [name, email, password, password_confirmation]
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 255
+        email:
+          type: string
+          format: email
+          maxLength: 255
+          description: Must be unique.
+        password:
+          type: string
+          minLength: 8
+          description: At least 8 characters, including one letter and one number.
+        password_confirmation:
+          type: string
+          description: Must match `password`. The alias `confirmed` is also accepted.
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+
+    ForgotPasswordRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+
+    ResetPasswordRequest:
+      type: object
+      required: [token, email, password, password_confirmation]
+      properties:
+        token:
+          type: string
+          description: Single-use token from the password-reset email.
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+        password_confirmation:
+          type: string
+          description: Must match `password`. The alias `confirmed` is also accepted.
+
+  User:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: Jane Developer
+        email:
+          type: string
+          format: email
+          example: jane@example.com
+        email_verified_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    TokenData:
+      type: object
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        access_token:
+          type: string
+          description: Plaintext Sanctum personal access token. Returned once; only its hash is stored.
+          example: '1|xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+        token_type:
+          type: string
+          enum: [Bearer]
+        expires_at:
+          type: string
+          format: date-time
+          description: Token expiry derived from `SANCTUM_EXPIRATION`.
+
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+        data: {}
+
+    TokenSuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+        data:
+          $ref: '#/components/schemas/TokenData'
+
+    UserSuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+        data:
+          type: object
+          properties:
+            user:
+              $ref: '#/components/schemas/User'
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          description: Field-level validation errors; empty object when not applicable.
+
+  responses:
+    Unauthenticated:
+      description: Missing, invalid, malformed, or revoked bearer token.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            message: Unauthenticated.
+            errors: {}
+
+    InvalidCredentials:
+      description: |
+        Wrong password or unknown email. The message is intentionally generic
+        and identical for both cases.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            message: The supplied credentials are invalid.
+            errors: {}
+
+    ValidationError:
+      description: Request validation failed. `errors` maps each invalid field to an array of messages.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            message: The email field must be a valid email address.
+            errors:
+              email:
+                - The email field must be a valid email address.
+
+    RateLimited:
+      description: Too many requests. Retry after the interval indicated by `Retry-After`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            message: Too many login attempts. Please try again in 42 seconds.
+            errors: {}
+
+security:
+  - bearerAuth: []

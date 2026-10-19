@@ -28,6 +28,12 @@ return [
         'key' => env('RESEND_KEY'),
     ],
 
+    'authapi' => [
+        // Base URL used in password-reset emails. Point this at your client
+        // application's password-reset page, e.g. https://yourapp.com/reset-password
+        'password_reset_url' => env('PASSWORD_RESET_URL', env('APP_URL')),
+    ],
+
     'slack' => [
         'notifications' => [
             'bot_user_oauth_token' => env('SLACK_BOT_USER_OAUTH_TOKEN'),
